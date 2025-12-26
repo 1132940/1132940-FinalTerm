@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HTML 圍棋遊戲（雙 Pass 自動終局）</title>
+    <style>
+        /* 定義棋盤大小和單元格尺寸 */
+        :root {
+            --board-size: 9; /* 棋盤格數 (例如 9x9) */
+            --cell-size: 40px; /* 每個交點間的距離 */
+            --board-total: calc(var(--board-size) - 1); /* 總間隔數 */
+            --board-width: calc(var(--board-total) * var(--cell-size));
+        }
+
+        /* 整體佈局 */
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #f4f4f4;
+            padding: 20px;
+        }
+
+        #game-container {
+            display: flex;
+            gap: 40px;
+            margin-top: 20px;
+        }
+
+        /* --- 棋盤繪製：確保格線可見 --- */
+        #board-wrapper {
+            position: relative;
+            /* 邊界線需要額外空間 */
+            width: calc(var(--board-width) + var(--cell-size) * 2); 
+            height: calc(var(--board-width) + var(--cell-size) * 2);
+            background-color: #deb887; /* 木色 */
+            border: 1px solid #333;
+            box-shadow: 5px 5px 10px rgba(0, 0, 0, 0.2);
+        }
+
+        /* 繪製線條 */
+        .line {
+            position: absolute;
+            background-color: #333;
+            z-index: 5; 
+        }
+
+        /* 垂直線 */
+        .v-line {
+            width: 1px;
+            top: var(--cell-size); 
+            bottom: var(--cell-size); 
+        }
+
+        /* 水平線 */
+        .h-line {
+            height: 1px;
+            left: var(--cell-size); 
+            right: var(--cell-size); 
+        }
+
+        /* 棋子容器 (交點) */
+        .intersection {
+            position: absolute;
+            width: var(--cell-size);
+            height: var(--cell-size);
+            transform: translate(-50%, -50%); 
+            cursor: pointer;
+            z-index: 10; 
+        }
+
+        /* 棋子 */
+        .stone {
+            position: absolute;
+            width: 36px; 
+            height: 36px;
+            border-radius: 50%;
+            box-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        .black { background-color: #000; }
+        .white { background-color: #fff; border: 1px solid #999; }
+        
+        .waiting { pointer-events: none; }
+
+        /* --- 資訊面板 --- */
+        #info-panel {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            width: 250px;
+            height: fit-content;
+        }
+        
+        /* 勝局紀錄區塊 */
+        #overall-scores {
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #333; 
+        }
+        #overall-scores h3 { margin-top: 0; color: #444; }
+
+
+        #scores {
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px dashed #ccc;
+        }
+
+        #scores p {
+            margin: 5px 0;
+            font-size: 1.1em;
+        }
+
+        #turn {
+            font-weight: bold;
+            margin-bottom: 15px;
+        }
+
+        .button-group button {
+            padding: 10px 15px;
+            margin-right: 10px;
+            margin-bottom: 10px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: background-color 0.3s;
+            width: 100%;
+        }
+
+        #pass-btn { background-color: #f39c12; color: white; }
+        #pass-btn:hover { background-color: #e67e22; }
+
+        #restart-btn { background-color: #4CAF50; color: white; }
+        #restart-btn:hover { background-color: #45a049; }
+
+        #refresh-score-btn { background-color: #008CBA; color: white; }
+        #refresh-score-btn:hover { background-color: #007bb5; }
+    </style>
+</head>
+<body>
+
+    <h1>圍棋遊戲（雙 Pass 自動終局與勝局紀錄）</h1>
+
+    <div id="game-container">
+        <div id="board-wrapper">
+            </div>
+        
+
+        <div id="info-panel">
+            
+            <div id="overall-scores">
+                <h3>🏆 勝局紀錄</h3>
+                <p>玩家（黑棋）：<span id="black-wins">0</span> 局</p>
+                <p>電腦（白棋）：<span id="white-wins">0</span> 局</p>
+            </div>
+
+            <h2>本局資訊</h2>
+
+            <div id="scores">
+                <h3>提子紀錄</h3>
+                <p>黑棋（玩家）提子數：<span id="black-captures">0</span></p>
+                <p>白棋（電腦）提子數：<span id="white-captures">0</span></p>
+            </div>
+
+            <p id="turn">輪到：<span id="current-player">黑棋</span></p>
+            <p id="message"></p>
+
+            <div class="button-group">
+                <button id="pass-btn">Pass (不落子)</button>
+                <button id="restart-btn">強制重新開始</button>
+                <button id="refresh-score-btn">強制計分</button>
+            </div>
+        </div>
+    </div>
+    <script>
+        const BOARD_SIZE = 9;
+        const EMPTY = 0;
+        const BLACK = 1;
+        const WHITE = 2;
+        const CELL_SIZE = 40; 
+        const AI_DELAY = 1; // 1 毫秒延遲，電腦極速下棋
+
+        let board = [];
+        let currentPlayer = BLACK;
+        let blackCaptures = 0;
+        let whiteCaptures = 0;
+        let previousBoardState = null;
+        let isWaitingForAI = false; 
+        let passCount = 0; // 連續 Pass 次數
+        // 從 localStorage 讀取勝局紀錄，如果沒有則從 0 開始
+        let gameScore = JSON.parse(localStorage.getItem('goGameScore')) || { black: 0, white: 0 }; 
+
+        const boardWrapper = document.getElementById('board-wrapper');
+        const turnElement = document.getElementById('current-player');
+        const messageElement = document.getElementById('message');
+        const blackCapturesElement = document.getElementById('black-captures');
+        const whiteCapturesElement = document.getElementById('white-captures');
+        const blackWinsElement = document.getElementById('black-wins'); 
+        const whiteWinsElement = document.getElementById('white-wins'); 
+        const passButton = document.getElementById('pass-btn');
+
+        // --- 初始化遊戲 ---
+        function initializeGame() {
+            board = Array(BOARD_SIZE).fill(0).map(() => Array(BOARD_SIZE).fill(EMPTY));
+            currentPlayer = BLACK;
+            blackCaptures = 0;
+            whiteCaptures = 0;
+            previousBoardState = null;
+            isWaitingForAI = false;
+            passCount = 0; 
+            renderBoard();
+            updateInfo();
+            messageElement.textContent = "黑棋（玩家）先手，請落子！";
+            passButton.disabled = false;
+        }
+
+        // --- 渲染棋盤 (維持不變) ---
+        function renderBoard() {
+            boardWrapper.innerHTML = '';
+            
+            boardWrapper.style.setProperty('--board-size', BOARD_SIZE);
+            boardWrapper.style.setProperty('--cell-size', `${CELL_SIZE}px`);
+            
+            boardWrapper.classList.toggle('waiting', isWaitingForAI);
+
+            for (let i = 0; i < BOARD_SIZE; i++) {
+                // 水平線
+                const hLine = document.createElement('div');
+                hLine.className = 'line h-line';
+                hLine.style.top = `${i * CELL_SIZE + CELL_SIZE}px`;
+                boardWrapper.appendChild(hLine);
+
+                // 垂直線
+                const vLine = document.createElement('div');
+                vLine.className = 'line v-line';
+                vLine.style.left = `${i * CELL_SIZE + CELL_SIZE}px`;
+                boardWrapper.appendChild(vLine);
+            }
+            
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    const intersection = document.createElement('div');
+                    intersection.className = 'intersection';
+                    
+                    intersection.style.top = `${r * CELL_SIZE + CELL_SIZE}px`;
+                    intersection.style.left = `${c * CELL_SIZE + CELL_SIZE}px`;
+
+                    intersection.dataset.row = r;
+                    intersection.dataset.col = c;
+                    // 在 AI 等待時禁用點擊事件
+                    if (!isWaitingForAI) {
+                        intersection.addEventListener('click', () => handleMove(r, c));
+                    }
+
+
+                    if (board[r][c] !== EMPTY) {
+                        const stone = document.createElement('div');
+                        stone.className = `stone ${board[r][c] === BLACK ? 'black' : 'white'}`;
+                        intersection.appendChild(stone);
+                    }
+                    boardWrapper.appendChild(intersection);
+                }
+            }
+        }
+        
+        // --- 核心輔助函數 (維持不變) ---
+        function findGroup(r, c, color, visited) {
+            const liberties = new Set();
+            const stones = [];
+            const stack = [[r, c]];
+            visited[r][c] = true;
+
+            while (stack.length > 0) {
+                const [currR, currC] = stack.pop();
+                stones.push(`${currR},${currC}`);
+
+                [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dr, dc]) => {
+                    const newR = currR + dr;
+                    const newC = currC + dc;
+
+                    if (newR >= 0 && newR < BOARD_SIZE && newC >= 0 && newC < BOARD_SIZE) {
+                        if (board[newR][newC] === EMPTY) {
+                            liberties.add(`${newR},${newC}`);
+                        } else if (board[newR][newC] === color && !visited[newR][newC]) {
+                            visited[newR][newC] = true;
+                            stack.push([newR, newC]);
+                        }
+                    }
+                });
+            }
+            return { liberties, stones };
+        }
+
+        function getLiberties(r, c, currentBoard) {
+            const color = currentBoard[r][c];
+            if (color === EMPTY) return 0;
+
+            const visited = Array(BOARD_SIZE).fill(0).map(() => Array(BOARD_SIZE).fill(false));
+            const liberties = new Set();
+            const stack = [[r, c]];
+            visited[r][c] = true;
+
+            while (stack.length > 0) {
+                const [currR, currC] = stack.pop();
+
+                [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dr, dc]) => {
+                    const newR = currR + dr;
+                    const newC = currC + dc;
+
+                    if (newR >= 0 && newR < BOARD_SIZE && newC >= 0 && newC < BOARD_SIZE) {
+                        if (currentBoard[newR][newC] === EMPTY) {
+                            liberties.add(`${newR},${newC}`);
+                        } else if (currentBoard[newR][newC] === color && !visited[newR][newC]) {
+                            visited[newR][newC] = true;
+                            stack.push([newR, newC]);
+                        }
+                    }
+                });
+            }
+            return liberties.size;
+        }
+
+        function captureStones(r, c, targetBoard) {
+            const opponentColor = (targetBoard[r][c] === BLACK) ? WHITE : BLACK;
+            let captures = 0;
+
+            [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dr, dc]) => {
+                const newR = r + dr;
+                const newC = c + dc;
+
+                if (newR >= 0 && newR < BOARD_SIZE && newC >= 0 && newC < BOARD_SIZE) {
+                    if (targetBoard[newR][newC] === opponentColor) {
+                        if (getLiberties(newR, newC, targetBoard) === 0) {
+                            const visited = Array(BOARD_SIZE).fill(0).map(() => Array(BOARD_SIZE).fill(false));
+                            const { stones } = findGroup(newR, newC, opponentColor, visited);
+
+                            stones.forEach(coord => {
+                                const [sr, sc] = coord.split(',').map(Number);
+                                targetBoard[sr][sc] = EMPTY;
+                                captures++;
+                            });
+                        }
+                    }
+                }
+            });
+
+            return captures;
+        }
+        
+        // **********************************************
+        // 電腦 AI 邏輯 (Pass 判定)
+        // **********************************************
+
+        function computerMove() {
+            if (currentPlayer !== WHITE) return;
+            
+            isWaitingForAI = true;
+            renderBoard(); 
+
+            const legalMoves = [];
+            const captureMoves = []; 
+            const computerColor = WHITE;
+
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    if (board[r][c] === EMPTY) {
+                        const newBoard = JSON.parse(JSON.stringify(board));
+                        newBoard[r][c] = computerColor;
+                        
+                        const capturedCount = captureStones(r, c, newBoard);
+                        
+                        const isSuicide = (capturedCount === 0 && getLiberties(r, c, newBoard) === 0);
+                        if (isSuicide) continue; 
+
+                        const newBoardState = JSON.stringify(newBoard);
+                        if (newBoardState === previousBoardState) continue; 
+
+                        if (capturedCount > 0) {
+                            captureMoves.push({ r, c, captures: capturedCount });
+                        }
+                        legalMoves.push({ r, c });
+                    }
+                }
+            }
+
+            let finalMove = null;
+
+            if (captureMoves.length > 0) {
+                // 優先選擇提子數最多的點
+                captureMoves.sort((a, b) => b.captures - a.captures);
+                finalMove = captureMoves[0];
+            } else if (legalMoves.length > 0) {
+                // 隨機選擇一個合法移動
+                const randomIndex = Math.floor(Math.random() * legalMoves.length);
+                finalMove = legalMoves[randomIndex];
+            }
+
+            if (finalMove) {
+                // 找到落子點：重置 Pass 計數，執行落子
+                passCount = 0; 
+                rawMove(finalMove.r, finalMove.c); 
+            } else {
+                // 找不到落子點：選擇 Pass
+                handlePass();
+                messageElement.textContent = "電腦 (白棋) 無處可下，選擇 Pass。";
+            }
+        }
+        
+        // **********************************************
+        // 統一落子/Pass 處理函數
+        // **********************************************
+        
+        // 處理落子
+        function rawMove(r, c) {
+            
+            const playerColor = currentPlayer;
+            
+            const newBoard = JSON.parse(JSON.stringify(board)); 
+            newBoard[r][c] = playerColor; 
+
+            const capturedCount = captureStones(r, c, newBoard);
+            
+            if (playerColor === BLACK) {
+                blackCaptures += capturedCount;
+            } else {
+                whiteCaptures += capturedCount;
+            }
+
+            board = newBoard;
+            previousBoardState = JSON.stringify(board);
+
+            passCount = 0; // **落子則重置 Pass 計數**
+
+            currentPlayer = (playerColor === BLACK) ? WHITE : BLACK;
+
+            isWaitingForAI = false; 
+            renderBoard();
+            updateInfo();
+            
+            if (playerColor === BLACK) {
+                messageElement.textContent = `玩家（黑棋）成功落子在 (${r+1}, ${c+1})，提子 ${capturedCount} 個。`;
+                messageElement.textContent += " 輪到電腦（白棋）思考...";
+                setTimeout(computerMove, AI_DELAY); 
+            } else {
+                messageElement.textContent = `電腦（白棋）成功落子在 (${r+1}, ${c+1})，提子 ${capturedCount} 個。輪到玩家（黑棋）。`;
+            }
+        }
+        
+        // 處理 Pass 邏輯 (實現連續兩次 Pass 終局)
+        function handlePass() {
+            // 1. 增加 Pass 計數
+            passCount++;
+
+            // 2. **檢查是否連續兩次 Pass 結束遊戲**
+            if (passCount >= 2) {
+                messageElement.textContent = "雙方連續 Pass，遊戲結束！開始計分。";
+                passButton.disabled = true;
+                isWaitingForAI = true; 
+                calculateScore(true); // 傳入 true 表示這是自動結束計分
+                return;
+            }
+            
+            // 3. 進行狀態更新和切換
+            const playerColor = currentPlayer;
+            currentPlayer = (playerColor === BLACK) ? WHITE : BLACK;
+            isWaitingForAI = false; 
+            updateInfo();
+            renderBoard(); 
+            
+            if (playerColor === BLACK) {
+                messageElement.textContent = "玩家（黑棋）選擇 Pass。輪到電腦（白棋）。";
+                messageElement.textContent += " 電腦（白棋）思考中...";
+                setTimeout(computerMove, AI_DELAY); 
+            } else {
+                messageElement.textContent = "電腦（白棋）選擇 Pass。輪到玩家（黑棋）。";
+            }
+        }
+
+        // 玩家點擊處理函數 (維持不變)
+        function handleMove(r, c) {
+            if (isWaitingForAI || currentPlayer === WHITE) {
+                messageElement.textContent = "請等待白棋（電腦）落子！";
+                return;
+            }
+
+            if (board[r][c] !== EMPTY) {
+                messageElement.textContent = "此交點已有棋子！";
+                return;
+            }
+
+            // 檢查合法性 (自殺和劫爭)
+            const newBoard = JSON.parse(JSON.stringify(board)); 
+            newBoard[r][c] = currentPlayer;
+
+            const capturedCount = captureStones(r, c, newBoard);
+            if (capturedCount === 0 && getLiberties(r, c, newBoard) === 0) {
+                messageElement.textContent = "禁止自殺！請下在有氣的位置。";
+                return;
+            }
+
+            const newBoardState = JSON.stringify(newBoard);
+            if (newBoardState === previousBoardState) {
+                messageElement.textContent = "禁止打劫！此為重複局面。";
+                return;
+            }
+            
+            isWaitingForAI = true; 
+            rawMove(r, c);
+        }
+
+        // --- 介面更新與事件處理 ---
+
+        function updateInfo() {
+            turnElement.textContent = (currentPlayer === BLACK) ? '黑棋（玩家）' : '白棋（電腦）';
+            blackCapturesElement.textContent = blackCaptures;
+            whiteCapturesElement.textContent = whiteCaptures;
+            blackWinsElement.textContent = gameScore.black; 
+            whiteWinsElement.textContent = gameScore.white; 
+        }
+        
+        // Pass 按鈕事件
+        passButton.addEventListener('click', function() {
+            if (currentPlayer === BLACK && !isWaitingForAI) {
+                handlePass();
+            } else if (isWaitingForAI) {
+                messageElement.textContent = "請等待電腦落子！";
+            } else {
+                 messageElement.textContent = "目前輪到電腦（白棋）落子。";
+            }
+        });
+
+        document.getElementById('refresh-score-btn').addEventListener('click', () => {
+            if (confirm("確定要強制計分嗎？強制計分的結果不會計入勝局紀錄。")) {
+                calculateScore(false); // 傳入 false 表示非終局計分
+            }
+        }); 
+
+        document.getElementById('restart-btn').addEventListener('click', function() {
+            if (confirm("確定要強制結束本局並重新開始嗎？本局結果將不計入勝局紀錄。")) {
+                initializeGame();
+            }
+        });
+
+        // --- 最終勝負判定與計分 ---
+
+        function calculateScore(isFinal) {
+            let blackScore = blackCaptures;
+            let whiteScore = whiteCaptures;
+            const visited = Array(BOARD_SIZE).fill(0).map(() => Array(BOARD_SIZE).fill(false));
+
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    if (board[r][c] === BLACK) {
+                        blackScore++; 
+                    } else if (board[r][c] === WHITE) {
+                        whiteScore++; 
+                    } else if (board[r][c] === EMPTY && !visited[r][c]) {
+                        const territoryResult = findTerritory(r, c, visited);
+                        
+                        if (territoryResult.isBlack) {
+                            blackScore += territoryResult.count;
+                        } else if (territoryResult.isWhite) {
+                            whiteScore += territoryResult.count;
+                        }
+                    }
+                }
+            }
+
+            // 貼目（Komi）: 白棋貼 6.5 目
+            whiteScore += 6.5;
+
+            let winnerMessage = "";
+            let winner = EMPTY;
+            
+            if (blackScore > whiteScore) {
+                winnerMessage = `黑棋（玩家）勝利！總分：黑 ${blackScore} vs. 白 ${whiteScore} (+6.5貼目)。`;
+                winner = BLACK;
+            } else if (whiteScore > blackScore) {
+                winnerMessage = `白棋（電腦）勝利！總分：黑 ${blackScore} vs. 白 ${whiteScore} (+6.5貼目)。`;
+                winner = WHITE;
+            } else {
+                winnerMessage = `平局！總分：黑 ${blackScore} vs. 白 ${whiteScore} (+6.5貼目)。`;
+            }
+            
+            // 如果是最終計分 (雙 Pass 自動結束或玩家主動選擇結束)
+            if (isFinal) {
+                if (winner === BLACK) {
+                    gameScore.black++;
+                } else if (winner === WHITE) {
+                    gameScore.white++;
+                }
+                // 將勝局紀錄儲存到瀏覽器 (可選，用於刷新頁面後保持紀錄)
+                localStorage.setItem('goGameScore', JSON.stringify(gameScore)); 
+
+                updateInfo(); 
+
+                alert(`--- 最終計分結果 (雙 Pass 結束) --- \n\n${winnerMessage}\n\n本局結束，請點擊確定開始下一局。`);
+                initializeGame(); // **自動開始下一局**
+            } else {
+                // 強制計分時只顯示結果，不計入勝局
+                alert(`--- 強制計分結果 --- \n\n${winnerMessage}\n\n結果不計入勝局紀錄。`);
+            }
+
+            messageElement.textContent = winnerMessage;
+        }
+        
+        // 地盤計算輔助函數 (維持不變)
+        function findTerritory(r, c, visited) {
+            const stack = [[r, c]];
+            visited[r][c] = true;
+            let count = 0;
+            let isBlack = true; 
+            let isWhite = true; 
+
+            while (stack.length > 0) {
+                const [currR, currC] = stack.pop();
+                count++;
+
+                [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([dr, dc]) => {
+                    const newR = currR + dr;
+                    const newC = currC + dc;
+
+                    if (newR >= 0 && newR < BOARD_SIZE && newC >= 0 && newC < BOARD_SIZE) {
+                        if (board[newR][newC] === EMPTY && !visited[newR][newC]) {
+                            visited[newR][newC] = true;
+                            stack.push([newR, newC]);
+                        } else if (board[newR][newC] === BLACK) {
+                            isWhite = false; 
+                        } else if (board[newR][newC] === WHITE) {
+                            isBlack = false; 
+                        }
+                    }
+                });
+            }
+
+            return { count, isBlack, isWhite };
+        }
+
+        // 啟動遊戲
+        initializeGame();
+
+    </script>
+</body>
+</html>
